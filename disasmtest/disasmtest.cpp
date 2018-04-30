@@ -1,3 +1,8 @@
+/*
+*	Command Line Test: C:\Windows\System32\ntdll.dll
+*/
+
+
 #include <stdio.h>
 #include <tchar.h>
 #include <stdlib.h>
@@ -13,74 +18,81 @@ VOID GetInstructionString(char *Str, _DecodedInst *Instr);
 
 int _tmain(int argc, _TCHAR* argv[])
 {
+	HANDLE hFile;
+	DWORD FileSize = 0, nBytesRead = 0, ET_RVA = 0, j = 0, x = 0;
+	BYTE *FileBuf = NULL;
+	IMAGE_DOS_HEADER *pDosHeader = NULL;
+	IMAGE_NT_HEADERS *pNtHeaders = NULL;
+	IMAGE_EXPORT_DIRECTORY *pExportDir = NULL;
+	DWORD *pFunctions = NULL, *pNames = NULL;
+
+	// Check Command Line
 	if (argc < 1) 
 		return 0;
-		
-	// Open PE file	
-	HANDLE hFile = CreateFile(argv[1], GENERIC_READ, FILE_SHARE_READ, NULL,	OPEN_EXISTING, 0, NULL);
+	
+	// Open File For Reading
+	hFile = CreateFile(argv[1], GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
 	if (hFile == INVALID_HANDLE_VALUE){		
 		return 0;
 	}
 
-	DWORD FileSize = GetFileSize(hFile, NULL);
-
-	DWORD BRW;
-	BYTE *FileBuf = new BYTE [FileSize];	
-	if (FileBuf)
-		ReadFile(hFile, FileBuf, FileSize, &BRW, NULL);
-	CloseHandle(hFile);
-
-	IMAGE_DOS_HEADER *pDosHeader = (IMAGE_DOS_HEADER *)FileBuf;
-	IMAGE_NT_HEADERS *pNtHeaders = (IMAGE_NT_HEADERS *)( (FileBuf != NULL ?	pDosHeader->e_lfanew : 0) + (ULONG_PTR)FileBuf );
-
-	if ( !FileBuf || 
-		 pDosHeader->e_magic   != IMAGE_DOS_SIGNATURE  ||
-		 pNtHeaders->Signature != IMAGE_NT_SIGNATURE   ||
-		 pNtHeaders->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress == 0)
-	{		
-		if (FileBuf)
-			delete FileBuf;
-		return 0;
-	}
-
-	
-	// Walk through export dir's functions	
-	DWORD ET_RVA = pNtHeaders->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress;
-	IMAGE_EXPORT_DIRECTORY *pExportDir = (IMAGE_EXPORT_DIRECTORY *)( RvaToOffset(pNtHeaders, ET_RVA) + (ULONG_PTR)FileBuf );
-	DWORD *pFunctions = (DWORD *)( RvaToOffset(pNtHeaders, pExportDir->AddressOfFunctions) + (ULONG_PTR)FileBuf );
-	DWORD *pNames     = (DWORD *)( RvaToOffset(pNtHeaders, pExportDir->AddressOfNames) + (ULONG_PTR)FileBuf);
-
-	Log("Number of Exported Functions: #[%d]\n", pExportDir->NumberOfFunctions);
-	Log("Export Base: [%d]\n\n\n", pExportDir->Base);  // Starting Ordinal Index Value
-	
-	// Linear Probing the EAT.
-	DWORD j = 0; // Name Index
-	for ( DWORD x = 0; x < pExportDir->NumberOfFunctions; x++ )
+	// Allocate & Read File Into Memory
+	FileSize = GetFileSize(hFile, NULL);		
+	FileBuf = new BYTE [FileSize];
+	if (FileBuf != NULL)
 	{
-		if (pFunctions[x] == 0) 
-			continue;
-		
-		Log( "Export Address Index: [%d]\n", x + 1 );
-		Log( "Function Virtual Address: [%X],", (DWORD*)(RvaToOffset(pNtHeaders, pFunctions[x]) + (ULONG_PTR)FileBuf) );
-		Log( " RVA: [%X],", pFunctions[x] );
-		Log( " File Offset: [%X]\n", RvaToOffset(pNtHeaders, pFunctions[x]) );		
-		
-		// Start ntdll.dll @ the 8th location for ENT.
-		if ( x <= 7 ) {
-			Log("Unknown:\n");
-		} else {
-			Log( "Export Name Index: [%d]\n", j);
-			Log( "Name Virtual Address: [%X],", (DWORD*)( RvaToOffset(pNtHeaders, pNames[j]) + (ULONG_PTR)FileBuf ) );
-			Log( " RVA: [%X],", pNames[j] );
-			Log( " File Offset: [%X]\n", RvaToOffset(pNtHeaders, pNames[j]) );
-			Log( "%s:\n", (DWORD*)(RvaToOffset(pNtHeaders, pNames[j]) + (ULONG_PTR)FileBuf));
-			j++;
+		ReadFile(hFile, FileBuf, FileSize, &nBytesRead, NULL);
+		CloseHandle(hFile);
+
+		// Set PE Pointers
+		pDosHeader = (IMAGE_DOS_HEADER *)FileBuf;
+		pNtHeaders = (IMAGE_NT_HEADERS *)(pDosHeader->e_lfanew + (ULONG_PTR)FileBuf);
+
+		if (pDosHeader->e_magic != IMAGE_DOS_SIGNATURE  ||
+			pNtHeaders->Signature != IMAGE_NT_SIGNATURE ||
+			pNtHeaders->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress == 0)
+		{
+			delete[] FileBuf;
+			return 0;
 		}
 
-		AddFunctionToLog(FileBuf, pFunctions[x]);
-	}
+		// Set Export Pointers
+		ET_RVA = pNtHeaders->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress;
+		pExportDir = (IMAGE_EXPORT_DIRECTORY *)(RvaToOffset(pNtHeaders, ET_RVA) + (ULONG_PTR)FileBuf);
+		pFunctions = (DWORD *)(RvaToOffset(pNtHeaders, pExportDir->AddressOfFunctions) + (ULONG_PTR)FileBuf);
+		pNames = (DWORD *)(RvaToOffset(pNtHeaders, pExportDir->AddressOfNames) + (ULONG_PTR)FileBuf);
+		Log("Number of Exported Functions: #[%d]\n", pExportDir->NumberOfFunctions);
+		Log("Export Base: [%d]\n\n\n", pExportDir->Base); // Starting Ordinal Index Value
 
-	delete FileBuf;
+		// Linear Probing the EAT.	
+		for (x = 0; x < pExportDir->NumberOfFunctions; x++)
+		{
+			if (pFunctions[x] == 0)
+				continue;
+
+			Log("Export Address Index: [%d]\n", x + 1); // Use The Starting Ordinal Index Value
+			Log("Function Virtual Address: [%X],", (DWORD*)(RvaToOffset(pNtHeaders, pFunctions[x]) + (ULONG_PTR)FileBuf));
+			Log(" RVA: [%X],", pFunctions[x]);
+			Log(" File Offset: [%X]\n", RvaToOffset(pNtHeaders, pFunctions[x]));
+
+			// Start ntdll.dll @ The 8th Location For ENT.
+			if (x <= 7) {
+				Log("Unknown:\n"); // Place Holder For Functions Called By Ordinal.
+			}
+			else {
+				Log("Export Name Index: [%d]\n", j);
+				Log("Name Virtual Address: [%X],", (DWORD*)(RvaToOffset(pNtHeaders, pNames[j]) + (ULONG_PTR)FileBuf));
+				Log(" RVA: [%X],", pNames[j]);
+				Log(" File Offset: [%X]\n", RvaToOffset(pNtHeaders, pNames[j]));
+				Log("%s:\n", (DWORD*)(RvaToOffset(pNtHeaders, pNames[j]) + (ULONG_PTR)FileBuf));
+				j++;
+			}
+
+			// Lets Add Our Functions To The Log
+			AddFunctionToLog(FileBuf, pFunctions[x]);
+		}
+	}
+	delete[] FileBuf;
 	return 0;
 }
 
@@ -142,33 +154,33 @@ VOID GetInstructionString(char *Str, _DecodedInst *Instr)
 DWORD RvaToOffset(IMAGE_NT_HEADERS *NT, DWORD Rva)
 {
 	DWORD Offset = Rva, Limit;
-	IMAGE_SECTION_HEADER *Img;
+	IMAGE_SECTION_HEADER *Section;
 	WORD i;
 
-	Img = IMAGE_FIRST_SECTION(NT);
+	Section = IMAGE_FIRST_SECTION(NT);
 
-	if (Rva < Img->PointerToRawData)
+	if (Rva < Section->PointerToRawData)
 		return Rva;
 
 	for (i = 0; i < NT->FileHeader.NumberOfSections; i++)
 	{
-		if (Img[i].SizeOfRawData)
-			Limit = Img[i].SizeOfRawData;
+		if (Section[i].SizeOfRawData)
+			Limit = Section[i].SizeOfRawData;
 		else
-			Limit = Img[i].Misc.VirtualSize;
+			Limit = Section[i].Misc.VirtualSize;
 
-		if (Rva >= Img[i].VirtualAddress &&	Rva < (Img[i].VirtualAddress + Limit))
+		if (Rva >= Section[i].VirtualAddress &&	Rva < (Section[i].VirtualAddress + Limit))
 		{
-			if (Img[i].PointerToRawData != 0)
+			if (Section[i].PointerToRawData != 0)
 			{
-				Offset -= Img[i].VirtualAddress;
-				Offset += Img[i].PointerToRawData;
+				Offset -= Section[i].VirtualAddress;
+				Offset += Section[i].PointerToRawData;
 			}
 
 			return Offset;
 		}
 	}
 
-	return NULL;
+	return 0;
 }
 
